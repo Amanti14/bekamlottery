@@ -24,7 +24,9 @@ const CFG = {
 /* ---------- TELEGRAM ---------- */
 const tg = window.Telegram && Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); try { tg.setHeaderColor('secondary_bg_color'); } catch (e) {} }
-const user = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) || { id: 1, first_name: 'Demo' };
+const tgUser = tg && tg.initData && tg.initDataUnsafe && tg.initDataUnsafe.user;  // only set when opened inside Telegram
+const guestId = (() => { try { let g = localStorage.getItem('raffle-guest-v1'); if (!g) { g = 'g' + Math.random().toString(36).slice(2, 10); localStorage.setItem('raffle-guest-v1', g); } return g; } catch (e) { return 'g-temp'; } })();
+const user = tgUser || { id: guestId, first_name: 'Guest', guest: true };
 const isAdmin = !CFG.API || CFG.ADMINS.includes(user.id);
 
 /* ---------- SESSION (stays signed in until the user logs out) ---------- */
@@ -32,6 +34,7 @@ const SK = 'raffle-session-v1';
 let session = null; try { session = JSON.parse(localStorage.getItem(SK)); } catch (e) {}
 const saveSession = () => { try { session ? localStorage.setItem(SK, JSON.stringify(session)) : localStorage.removeItem(SK); } catch (e) {} };
 function st() { return (session && session.settings) || {}; }
+if (session && session.uid !== user.id) { session = null; saveSession(); }  // a different person or context: sign in again
 
 /* ---------- DEMO BACKEND (replace with Worker calls via CFG.API) ---------- */
 const KEY = 'raffle-demo-v1';
@@ -170,13 +173,12 @@ function adminV() {
 }
 
 function loginV() {
-  const ok = !CFG.API || (tg && tg.initData);
+  const g = user.guest;
   return `<div class="hero">
     <div class="ticket" style="cursor:default;pointer-events:none"><span class="main"><b>Bekam Lottery</b><small>Win real prizes, one ticket at a time.</small></span><span class="stub"><b>#</b><small>win</small></span></div>
-    <h1 style="margin:0">Sign in to play</h1>
-    <p class="sub" style="margin:0">We use your Telegram name, username and ID to issue receipts and announce winners. Your phone number stays private unless you add it in your profile.</p>
-    ${ok ? '' : '<p><span class="tag rejected">Open this app from Telegram to sign in.</span></p>'}
-    <button class="btn wide" data-act="login" ${ok ? '' : 'disabled'}>Continue with Telegram</button></div>`;
+    <h1 style="margin:0">${g ? 'Welcome' : 'Sign in to play'}</h1>
+    <p class="sub" style="margin:0">${g ? 'You’re in a browser, so you’ll continue as a guest. Open Bekam Lottery from Telegram to sign in with your account.' : 'We use your Telegram name, username and ID to issue receipts and announce winners. Your phone number stays private unless you add it in your profile.'}</p>
+    <button class="btn wide" data-act="login">${g ? 'Continue as guest' : 'Continue with Telegram'}</button></div>`;
 }
 
 function profileV() {
@@ -185,13 +187,14 @@ function profileV() {
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
   return `<h1>Profile</h1>
     <div class="card" style="display:flex;gap:14px;align-items:center"><div class="av">${u.photo_url ? `<img src="${esc(u.photo_url)}" alt="">` : esc((u.first_name || '?')[0])}</div>
-    <div><b class="hd" style="font-size:20px">${esc(name)}</b><br><small style="color:var(--mute)">${u.username ? '@' + esc(u.username) + '. ' : ''}Telegram ID ${u.id}</small></div></div>
+    <div><b class="hd" style="font-size:20px">${esc(name)}</b><br><small style="color:var(--mute)">${u.guest ? 'Guest, not signed in with Telegram' : (u.username ? '@' + esc(u.username) + '. ' : '') + 'Telegram ID ' + u.id}</small></div></div>
     <div class="card"><div class="row"><span>Tickets bought</span><b>${count}</b></div><div class="row"><span>Total spent</span><b>${money(spent)}</b></div></div>
+    ${u.guest ? `<div class="card"><b>Browsing as a guest.</b><p class="sub" style="margin:4px 0 0">Open Bekam Lottery in Telegram to sign in with your account.${CFG.API ? ' You need a Telegram account to buy tickets.' : ''}</p></div>` : ''}
     <h2>Settings</h2>
     <div class="card"><label for="ph">Contact phone</label><input id="ph" type="tel" inputmode="tel" placeholder="09XX XXX XXX" value="${esc(s.phone || '')}">
     <p class="sub" style="margin:-6px 0 12px;font-size:13px">Only the organizer sees this, so they can reach you if you win.</p>
     <label for="dm">Preferred payment method</label><select id="dm">${Object.keys(CFG.PAY).map(k => `<option ${s.method == k ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select>
-    <div class="row"><label for="nt" style="margin:0">Message me about payments and draw results</label><input id="nt" type="checkbox" ${s.notify !== false ? 'checked' : ''}></div>
+    ${u.guest ? '' : `<div class="row"><label for="nt" style="margin:0">Message me about payments and draw results</label><input id="nt" type="checkbox" ${s.notify !== false ? 'checked' : ''}></div>`}
     <button class="btn wide" data-act="saveset" style="margin-top:12px">Save settings</button></div>
     <button class="btn ghost wide" data-act="logout">Log out</button>`;
 }
@@ -225,14 +228,14 @@ document.addEventListener('click', async e => {
   const a = b.dataset.act, d = b.dataset;
   try {
     if (a == 'tab') { tab = d.t; render(); }
-    else if (a == 'login') { b.disabled = true; const r = await call('login'); session = { token: r.token, settings: r.settings || {}, at: Date.now() }; saveSession(); buzz('ok'); await load(); }
+    else if (a == 'login') { b.disabled = true; const r = user.guest && CFG.API ? { token: 'guest' } : await call('login'); session = { token: r.token, uid: user.id, guest: !!user.guest, settings: r.settings || {}, at: Date.now() }; saveSession(); buzz('ok'); await load(); }
     else if (a == 'logout') {
       if (!confirm('Log out of Bekam Lottery?')) return;
       session = null; saveSession(); cur = null; sel.clear(); step = 'browse'; tab = 'raffles'; render();
     }
     else if (a == 'saveset') {
-      const v = { phone: val('ph'), method: val('dm'), notify: $('nt').checked };
-      await call('settings', v); session.settings = v; saveSession();
+      const v = { phone: val('ph'), method: val('dm'), notify: $('nt') ? $('nt').checked : false };
+      if (!user.guest) await call('settings', v); session.settings = v; saveSession();
       if (v.notify && tg && tg.requestWriteAccess) { try { tg.requestWriteAccess(); } catch (e) {} }
       toast('Settings saved.');
     }
@@ -240,7 +243,10 @@ document.addEventListener('click', async e => {
     else if (a == 'back') back();
     else if (a == 'done') { step = 'browse'; cur = null; tab = 'raffles'; render(); }
     else if (a == 'pick') { const n = +d.n; sel.has(n) ? sel.delete(n) : sel.add(n); buzz('light'); render(); }
-    else if (a == 'checkout') { step = 'checkout'; render(); scrollTo(0, 0); }
+    else if (a == 'checkout') {
+      if (CFG.API && user.guest) return toast('Open Bekam Lottery in Telegram to buy tickets.');
+      step = 'checkout'; render(); scrollTo(0, 0);
+    }
     else if (a == 'pay') {
       const ref = val('ref').toUpperCase();
       if (ref.length < 6) return toast('Enter the transaction reference from your payment SMS.');
